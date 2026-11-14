@@ -6,7 +6,7 @@
 (()=>{
 "use strict";
 const pauseButton=document.getElementById("pause");const canvas=document.getElementById("game"),ctx=canvas.getContext("2d"),hud=document.getElementById("hud"),overlay=document.getElementById("overlay"),panel=document.getElementById("panel"),count=document.getElementById("count");
-let W=0,H=0,ground=0,playerX=0,y=0,vy=0,jumps=0,supported=false,flipTime=0,flipActive=false,state="home",last=0,elapsed=0,distance=0,runCoins=0,objects=[],coinItems=[],spawn=0,coinSpawn=0,boost=0,nextBoost=50,invuln=0,revived=false,retries=0;
+let W=0,H=0,ground=0,playerX=0,y=0,vy=0,jumps=0,supported=false,flipTime=0,flipDuration=.85,flipActive=false,state="home",last=0,elapsed=0,distance=0,runCoins=0,objects=[],coinItems=[],spawn=0,coinSpawn=0,boost=0,nextBoost=50,invuln=0,revived=false,retries=0;
 let bank=Number(localStorage.getItem("baby_bank")||0),up=Number(localStorage.getItem("baby_up")||0),best=Number(localStorage.getItem("baby_best")||0);
 function resize(){W=innerWidth;H=innerHeight;const d=Math.min(devicePixelRatio||1,2);canvas.width=Math.floor(W*d);canvas.height=Math.floor(H*d);ctx.setTransform(d,0,0,d,0,0);ground=H-40-Math.max(38,H*.16);playerX=W*.30;if(state!=="play")y=ground-38}addEventListener("resize",resize);resize();
 const score=()=>Math.floor(distance*5*(1+up*.01)+runCoins*10);
@@ -20,7 +20,7 @@ function revive(){revived=true;objects=objects.filter(o=>o.x>playerX+120);state=
 function pause(){if(state!=="play")return;state="paused";view('<h2>一時停止</h2><p>ゲーム内の時間と障害物は停止中</p><button id="resume">▶ つづける</button><button id="home" class="gray">ホームへ</button>');document.getElementById("resume").onclick=resume;document.getElementById("home").onclick=home}
 function resume(){if(state!=="paused")return;state="pauseCountdown";overlay.style.display="none";count.style.display="grid";let n=3;count.textContent=n;const id=setInterval(()=>{if(state!=="pauseCountdown"){clearInterval(id);count.style.display="none";return}n--;if(n>0)count.textContent=n;else{clearInterval(id);count.style.display="none";state="play";last=performance.now();requestAnimationFrame(frame)}},1000)}
 pauseButton.addEventListener("pointerdown",e=>e.stopPropagation());pauseButton.addEventListener("click",pause);
-function jump(){if(state!=="play"||boost>0)return;if(jumps<2){vy=-Math.max(290,H*.92);jumps++;if(jumps===2){flipTime=0;flipActive=true}supported=false}}
+function jump(){if(state!=="play"||boost>0)return;if(jumps<2){const impulse=Math.max(290,H*.92);vy=-impulse;jumps++;if(jumps===2){flipTime=0;flipDuration=Math.max(.65,2*impulse/Math.max(760,H*2.5));flipActive=true}supported=false}}
 canvas.addEventListener("pointerdown",jump);addEventListener("keydown",e=>{if(e.code==="Space"||e.code==="ArrowUp"){e.preventDefault();jump()}});
 function frame(t){if(state!=="play")return;const dt=Math.min(.04,Math.max(0,(t-last)/1000));last=t;elapsed+=dt;if(flipActive)flipTime+=dt;const speed=Math.min(450,160+Math.floor(elapsed/30)*25),travel=speed*(boost>0?3:1)*dt;distance+=travel/25;invuln=Math.max(0,invuln-dt);boost=Math.max(0,boost-dt);if(elapsed>=nextBoost){boost=5;nextBoost=elapsed+45+Math.random()*15}
 const oldFeet=y+38;const wasSupported=supported;vy+=Math.max(760,H*2.5)*dt;y+=vy*dt;supported=false;let surface=ground;for(const o of objects){if(!o.hole&&o.x<playerX+13&&o.x+o.w>playerX-13){const top=ground-34;if(oldFeet<=top+6&&vy>=0&&top<surface)surface=top}}if(y+38>=surface&&vy>=0){y=surface-38;vy=0;jumps=0;flipActive=false;flipTime=0;supported=true}if(wasSupported&&!supported&&vy===0){vy=1}
@@ -35,7 +35,7 @@ function drawBaby(g,x,top,t){
  const airborne=jumps>0&&top<ground-40;
  const phase=t*.018;
  const headTurn=Math.sin(t*.006)*.17;
- const spin=flipActive?Math.min(1,flipTime/.58)*Math.PI*2:0;
+ const spin=flipActive?Math.min(1,flipTime/flipDuration)*Math.PI*2:0;
  g.save();g.translate(x,top+24);g.rotate(spin);
  const stride=airborne?0:Math.sin(phase);
  const bounce=airborne?0:Math.abs(stride)*1.7;
