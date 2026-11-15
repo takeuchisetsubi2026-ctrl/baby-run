@@ -69,7 +69,7 @@ let state = "home", stageTime = 0, afterCount, last, audio, warning;
 let elapsed, position, runStars, rawScore, y, vy, jumps, supported = true, falling;
 let flipActive = false, flipTime = 0, flipDuration = .62, invuln, revived, credited;
 let phase, phaseTime, route, nextHouse, safeUntil, nextFeature, itemIndex, power, powerUntil, pickupAfter;
-let nextItemAt, itemDelay;
+let nextItemAt, itemDelay, forestFeatures;
 let objects = [], stars = [], pickups = [];
 
 function readProfile(){
@@ -143,7 +143,7 @@ function grow(){
  state="menu";
  const single=upgradeCost(profile.up);
  const total=Array.from({length:10},(_,i)=>upgradeCost(profile.up+i)).reduce((a,b)=>a+b,0);
- view("menu",`<h2>育成 Lv.${1+Math.floor(profile.up/10)}</h2><p>⭐ ${format(profile.bank)}　スコア ×${(1+profile.up*.01).toFixed(2)}</p>
+ view("menu",`<h2>育成 Lv.${1+Math.floor(profile.up/10)}</h2><p>⭐ ${format(profile.bank)}　スコア ×${(1+profile.up*.01).toFixed(2)}</p><small>走って集めた星で育成すると、次のランの得点が上がります。</small>
  <progress value="${profile.up%10}" max="10" aria-label="育成の目盛り"></progress><p>${profile.up%10} / 10</p>
  <div class="row">${button("up","星でレベルアップ（"+single+"星）","",profile.bank<single)}
  ${button("up10","10回まとめて育成（"+total+"星）","",profile.bank<total)}${button("back","戻る","secondary")}</div>`);
@@ -177,7 +177,7 @@ function start(){
  unlockSound();sound(440,.28);
  elapsed=position=runStars=rawScore=credited=invuln=0;
  phase="forest";phaseTime=0;route="day";nextHouse=60;safeUntil=0;
- nextFeature=280;itemDelay=4500;nextItemAt=Infinity;itemIndex=0;
+ nextFeature=280;forestFeatures=0;itemDelay=4500;nextItemAt=Infinity;itemIndex=0;
  revived=false;power=null;powerUntil=pickupAfter=0;objects=[];stars=[];pickups=[];
  resetJump();state="sparkle";stageTime=0;overlay.hidden=true;setHud(true);updateHud();
 }
@@ -260,16 +260,34 @@ function updateRoute(dt){
  }
 }
 function speed(){return phase==="room"?(route==="night"?236:210):222+Math.min(30,Math.floor(elapsed/30)*6);}
-function hillHeight(o,x){return Math.sin((x-o.x)/o.w*Math.PI)*o.h;}
+function isTerrain(o){return o.kind==="hill" || o.kind==="ledge";}
+function terrainHeight(o,x){
+ const dx=x-o.x;
+ if(o.kind==="hill") return Math.sin(dx/o.w*Math.PI)*o.h;
+ const progress=Math.min(1,dx/o.ramp);
+ return o.h*progress;
+}
 function terrainAt(x){
  for(const o of objects){
   if(x<o.x || x>=o.x+o.w) continue;
   if(o.kind==="pit") return -Infinity;
-  if(o.kind==="hill") return hillHeight(o,x);
+  if(isTerrain(o)) return terrainHeight(o,x);
  }
  return 0;
 }
 function buildFeature(x,v){
+ if(phase==="forest" && forestFeatures++%4===0){
+  const ledge={x,kind:"ledge",w:228,ramp:132,h:58};
+  objects.push(ledge);
+  const edge=x+ledge.w;
+  // The lower trail follows the fall from the ledge at running speed.
+  for(const offset of [34,50,66,82,98]){
+   const fall=GRAVITY*(offset/v)**2/2;
+   stars.push({x:edge+offset,y:27+Math.max(0,ledge.h-fall),value:1});
+  }
+  nextFeature=edge+233;
+  return;
+ }
  const mild=elapsed<9 || elapsed<safeUntil || (phase==="room" && route==="day");
  const roll=Math.random();
  const night=phase==="room" && route==="night";
@@ -329,7 +347,7 @@ function activate(kind,now,multiplier){
 function safeDismount(){
  // End beyond every touching hazard, never in an adjacent pit or obstacle.
  let blocked;
- while((blocked=objects.find(o=>o.kind!=="hill" && o.x-13<position && o.x+o.w+13>position))){
+ while((blocked=objects.find(o=>!isTerrain(o) && o.x-13<position && o.x+o.w+13>position))){
   position=blocked.x+blocked.w+15;
  }
  resetJump();y=Math.max(0,terrainAt(position));
@@ -337,7 +355,7 @@ function safeDismount(){
 function expirePower(now){
  if(!power || now<powerUntil) return;
  if(power==="bike" || (power==="shield" && objects.some(o=>
-  o.x-10<position && o.x+o.w+10>position && (o.kind==="pit" || o.kind!=="hill" && y<o.h)
+  o.x-10<position && o.x+o.w+10>position && (o.kind==="pit" || !isTerrain(o) && y<o.h)
  ))) safeDismount();
  power=null;pickupAfter=now+1200;buzz(18);
 }
@@ -354,6 +372,7 @@ function step(dt,now=Date.now()){
   buildFeature(nextFeature,v);
  }
 
+ const previousTerrain=terrainAt(position);
  position+=v*(bike?3:1)*dt;
  const multiplier=(1+profile.up*.01)*(night?1.5:1)*(bike?1.1:1);
  rawScore+=v*(bike?3:1)*dt/5*multiplier;
@@ -370,12 +389,13 @@ function step(dt,now=Date.now()){
   if(protectedRun && terrain===-Infinity) floor=0;
   if(!falling && terrain!==-Infinity){
    for(const o of objects){
-    if(o.kind==="pit" || o.kind==="hill" || o.x>=position+10 || o.x+o.w<=position-10) continue;
+    if(o.kind==="pit" || isTerrain(o) || o.x>=position+10 || o.x+o.w<=position-10) continue;
     if(previous>=o.h-2 && vy<=0) floor=Math.max(floor,o.h);
     else if(!protectedRun && y<o.h-1 && y+BABY_HEIGHT>0){end();return;}
    }
   }
-  const followsGround=supported && floor===terrain && floor>=0 && previous<22;
+  const followsGround=supported && floor===terrain && floor>=0 &&
+   Math.abs(previous-previousTerrain)<.01 && previousTerrain-terrain<4;
   const landed=previous>=floor-3 && y<=floor;
   if(!falling && Number.isFinite(floor) && vy<=0 && (followsGround || landed)){
    y=floor;vy=0;supported=true;jumps=0;flipActive=false;
@@ -410,25 +430,41 @@ function updateHud(){
 }
 function drawBaby(g,x,top,t){
  const airborne=!supported;
- const phase=t*.018;
+ const phase=t*.022;
  const headTurn=Math.sin(t*.006)*.17;
  const spin=flipActive?Math.min(1,flipTime/flipDuration)*Math.PI*2:0;
  g.save();g.translate(x,top+1);g.scale(.80,.80);g.rotate(spin);
  const stride=airborne?0:Math.sin(phase);
- const bounce=airborne?0:Math.abs(stride)*1.7;
+ const bounce=airborne?0:Math.abs(stride)*2.4;
  g.translate(0,-bounce);
+ g.rotate(airborne?0:Math.cos(phase)*.07);
  g.lineJoin="round";g.lineCap="round";g.lineWidth=1.8;g.strokeStyle="#74422f";
  const oval=(cx,cy,rx,ry,color)=>{g.fillStyle=color;g.beginPath();g.ellipse(cx,cy,rx,ry,0,0,Math.PI*2);g.fill();g.stroke()};
- // rear-stretched arms
- g.save();g.rotate(-.05);oval(-18,-5,14,4.5,"#ffcfaa");oval(-28,-4,5,4.5,"#ffcfaa");g.restore();
+ const outfit=wardrobe[profile.outfit].color;
+ const drawArm=(side)=>{
+  g.save();g.translate(side===1?9:-10,0);
+  g.rotate(airborne?side*.9-.4:side*stride*.62-.14);
+  oval(0,3,5.2,6,outfit);
+  oval(1,10,4.2,6,"#ffcfaa");
+  oval(3,15,4.6,4.5,"#ffcfaa");
+  g.restore();
+ };
+ drawArm(-1);
  // feet and legs
- for(let i=0;i<2;i++){const v=i===0?1:-1;g.save();g.translate(i?3:-6,17);g.rotate(airborne?(i?.7:-.8):stride*.65*v);oval(0,8,5,12,"#ffd74a");oval(4,17,10,5,"#f85f84");g.restore()}
+ for(let i=0;i<2;i++){const v=i===0?1:-1;g.save();g.translate(i?3:-6,17);g.rotate(airborne?(i?.7:-.8):stride*.56*v);oval(0,8,5,12,"#ffd74a");oval(4,17,10,5,"#f85f84");g.restore()}
  // cherry shirt
- oval(-1,5,16,15,wardrobe[profile.outfit].color);
+ oval(-1,5,16,15,outfit);
  for(const [dx,dy] of [[-9,2],[3,0],[9,11],[-5,13]]){g.fillStyle="#e74855";g.beginPath();g.arc(dx,dy,2.2,0,7);g.arc(dx+4,dy+1,2.2,0,7);g.fill();g.strokeStyle="#438f58";g.lineWidth=1;g.beginPath();g.moveTo(dx+2,dy-1);g.lineTo(dx+2,dy-5);g.stroke()}
- // neck + hair
+ g.strokeStyle="#74422f";g.lineWidth=1.8;
+ drawArm(1);
  oval(5,-13,5,6,"#ffcfaa");
  g.save();g.translate(6,-22);g.rotate(headTurn);
+ drawBabyFace(g,oval);
+ g.restore();g.restore();
+}
+
+// Keep the face artwork independent of the shared body animation.
+function drawBabyFace(g,oval){
  oval(0,-3,18,18,"#6d3f2c");
  oval(3,0,16,15,"#ffdab8");
  // fringe
@@ -439,12 +475,11 @@ function drawBaby(g,x,top,t){
  if (warning) {
   oval(-3,-2,3,4,"#493025");oval(10,-2,3,4,"#493025");
   oval(5,8,4,5,"#b73f45");
-  g.restore();g.restore();return;
+  return;
  }
  // cheeks and wide smile
  g.fillStyle="#f6a7a1";g.globalAlpha=.65;g.beginPath();g.ellipse(-7,5,4,2,0,0,7);g.ellipse(14,5,4,2,0,0,7);g.fill();g.globalAlpha=1;
  g.fillStyle="#b73f45";g.beginPath();g.ellipse(4,7,7,5,0,0,Math.PI);g.fill();g.strokeStyle="#783b36";g.lineWidth=1.2;g.stroke();
- g.restore();g.restore();
 }
 
 function rect(x,y,w,h,fill,r=0){
@@ -530,16 +565,13 @@ function feature(o){
   rect(x,ground,o.w,H-ground,"#251e37");rect(x+4,ground+16,Math.max(0,o.w-8),H-ground-16,"#171628");
   return;
  }
- if(o.kind==="hill"){
+ if(isTerrain(o)){
   ctx.beginPath();ctx.moveTo(x,ground);
-  for(let dx=0;dx<=o.w;dx+=2) ctx.lineTo(x+dx,ground-hillHeight(o,o.x+dx));
-  ctx.closePath();ctx.fillStyle="#75af53";ctx.fill();
-  ctx.beginPath();
-  for(let dx=0;dx<=o.w;dx+=1){
-   const top=ground-hillHeight(o,o.x+dx);
-   if(dx) ctx.lineTo(x+dx,top);else ctx.moveTo(x,top);
-  }
-  ctx.strokeStyle="#3d7239";ctx.lineWidth=2;ctx.stroke();return;
+  for(let dx=0;dx<=o.w;dx++) ctx.lineTo(x+dx,ground-terrainHeight(o,o.x+dx));
+  if(o.kind==="ledge") ctx.lineTo(x+o.w,ground);
+  ctx.strokeStyle="#3d7239";ctx.lineWidth=2;ctx.stroke();
+  ctx.closePath();ctx.fillStyle=o.kind==="ledge"?"#82b95c":"#75af53";ctx.fill();
+  return;
  }
  switch(o.kind){
   case "bear":
