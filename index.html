@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>ベイビーラン 星の夢</title>
+<title>ベイビーラン 星の夢｜アイテム調整版</title>
 <style>
 *{box-sizing:border-box}
 :root{--banner:calc(28px + env(safe-area-inset-bottom));color-scheme:light}
@@ -55,12 +55,21 @@ const wardrobe = [
  {name:"ミント（仮）",color:"#a4e2c5"},
  {name:"すみれ（仮）",color:"#b9aff0"}
 ];
-const items = {magnet:["磁石","🧲"], shield:["おしゃぶり","🛡"], bike:["バランスバイク","🚲"]};
+const items = {
+ bonus:{name:"星 +5",icon:"⭐",tier:"weak",duration:0},
+ magnet:{name:"磁石",icon:"🧲",tier:"medium",duration:5000},
+ shield:{name:"おしゃぶり",icon:"",tier:"medium",duration:3000},
+ bike:{name:"バランスバイク",icon:"🚲",tier:"strong",duration:5000}
+};
+const itemColors={weak:"#ffec9e",medium:"#b5f2ff",strong:"#e9c1ff"};
+const itemOrder=["bonus","magnet","bonus","shield","bonus","bike"];
+const BUBBLE_RADIUS=19;
 let W, H, ground, playerX, width, height;
 let state = "home", stageTime = 0, afterCount, last, audio, warning;
 let elapsed, position, runStars, rawScore, y, vy, jumps, supported = true, falling;
 let flipActive = false, flipTime = 0, flipDuration = .62, invuln, revived, credited;
-let phase, phaseTime, route, nextHouse, safeUntil, nextFeature, nextItem, itemIndex, power, powerTime;
+let phase, phaseTime, route, nextHouse, safeUntil, nextFeature, itemIndex, power, powerUntil, pickupAfter;
+let nextItemAt, itemDelay;
 let objects = [], stars = [], pickups = [];
 
 function readProfile(){
@@ -168,8 +177,8 @@ function start(){
  unlockSound();sound(440,.28);
  elapsed=position=runStars=rawScore=credited=invuln=0;
  phase="forest";phaseTime=0;route="day";nextHouse=60;safeUntil=0;
- nextFeature=280;nextItem=1050;itemIndex=0;
- revived=false;power=null;powerTime=0;objects=[];stars=[];pickups=[];
+ nextFeature=280;itemDelay=4500;nextItemAt=Infinity;itemIndex=0;
+ revived=false;power=null;powerUntil=pickupAfter=0;objects=[];stars=[];pickups=[];
  resetJump();state="sparkle";stageTime=0;overlay.hidden=true;setHud(true);updateHud();
 }
 function resetJump(){
@@ -178,17 +187,24 @@ function resetJump(){
 function countdown(then){
  state="count";stageTime=0;afterCount=then;count.textContent="3";count.hidden=false;
 }
+function enterPlay(now=Date.now()){
+ expirePower(now);
+ nextItemAt=now+itemDelay;
+ state="play";
+}
 function pause(){
  if(state!=="play") return;
+ itemDelay=Math.max(0,nextItemAt-Date.now());
  state="paused";
  view("paused",`<h2>一時停止</h2><div class="row">${button("resume","つづける")}${button("home","ホーム","secondary")}</div>`);
- on("resume",()=>{unlockSound();overlay.hidden=true;countdown(()=>{state="play";});});
+ on("resume",()=>{unlockSound();overlay.hidden=true;countdown(enterPlay);});
  on("home",()=>{settle();home();});
 }
 function settle(){
  profile.bank+=runStars-credited;credited=runStars;profile.best=Math.max(profile.best,score());save();
 }
 function end(){
+ itemDelay=Math.max(0,nextItemAt-Date.now());
  settle();sound(190,.2);buzz(42);state="eyes";stageTime=0;byId("eyes").hidden=false;updateHud();
 }
 function result(){
@@ -204,13 +220,14 @@ function revive(){
  revived=true;overlay.hidden=true;
  countdown(()=>{
   // Keep progress and course positions. During recovery the runner can cross the pit in place.
-  resetJump();invuln=2;state="play";
+  resetJump();enterPlay();invuln=2;
  });
 }
 on("pause",pause);
 document.addEventListener("visibilitychange",()=>{if(document.hidden) pause();});
 function jump(){
  if(state!=="play" || falling) return;
+ expirePower(Date.now());
  if(phase==="fork") selectRoute("night");
  if(power==="bike" || jumps>=2) return;
  unlockSound();
@@ -224,7 +241,7 @@ addEventListener("keydown",e=>{
 });
 
 function selectRoute(choice){phase="entry";phaseTime=0;route=choice;}
-function clearCourse(){objects=[];stars=[];pickups=[];nextFeature=position+220;nextItem=Math.max(nextItem,position+440);}
+function clearCourse(){objects=[];stars=[];pickups=[];nextFeature=position+220;}
 function safePhase(){return phase!=="forest" && phase!=="room";}
 function updateRoute(dt){
  phaseTime+=dt;
@@ -243,11 +260,12 @@ function updateRoute(dt){
  }
 }
 function speed(){return phase==="room"?(route==="night"?236:210):222+Math.min(30,Math.floor(elapsed/30)*6);}
+function hillHeight(o,x){return Math.sin((x-o.x)/o.w*Math.PI)*o.h;}
 function terrainAt(x){
  for(const o of objects){
   if(x<o.x || x>=o.x+o.w) continue;
   if(o.kind==="pit") return -Infinity;
-  if(o.kind==="hill") return Math.sin((x-o.x)/o.w*Math.PI)*o.h;
+  if(o.kind==="hill") return hillHeight(o,x);
  }
  return 0;
 }
@@ -285,26 +303,57 @@ function buildFeature(x,v){
  }
  nextFeature=x+o.w+(large?285:night?215:250)+Math.random()*65;
 }
-function activate(kind){
- power=kind;powerTime=5;buzz([24,50,24]);sound(620,.25);
- if(kind==="bike") resetJump();
+function bubbleHeight(p,now){
+ return 75+5*Math.sin((now-p.born)/380);
 }
-function step(dt){
+function spawnBubble(now){
+ if(now<nextItemAt || now<pickupAfter || power || pickups.length) return;
+ // Keep the whole jump arc clear, including after a large pit.
+ const lead=Math.min(280,W-playerX+28);
+ const x=objects.reduce((min,o)=>Math.max(min,o.x+o.w+155),position+lead);
+ pickups.push({x,kind:itemOrder[itemIndex++%itemOrder.length],born:now});
+ nextFeature=Math.max(nextFeature,x+155);
+ nextItemAt=now+6500;
+}
+function activate(kind,now,multiplier){
+ if(power || now<pickupAfter) return false;
+ if(kind==="bonus"){
+  runStars+=5;rawScore+=50*multiplier;pickupAfter=now+1200;
+ } else {
+  power=kind;powerUntil=now+items[kind].duration;
+  if(kind==="bike") resetJump();
+ }
+ buzz([24,50,24]);sound(620,.25);
+ return true;
+}
+function safeDismount(){
+ // End beyond every touching hazard, never in an adjacent pit or obstacle.
+ let blocked;
+ while((blocked=objects.find(o=>o.kind!=="hill" && o.x-13<position && o.x+o.w+13>position))){
+  position=blocked.x+blocked.w+15;
+ }
+ resetJump();y=Math.max(0,terrainAt(position));
+}
+function expirePower(now){
+ if(!power || now<powerUntil) return;
+ if(power==="bike" || (power==="shield" && objects.some(o=>
+  o.x-10<position && o.x+o.w+10>position && (o.kind==="pit" || o.kind!=="hill" && y<o.h)
+ ))) safeDismount();
+ power=null;pickupAfter=now+1200;buzz(18);
+}
+function step(dt,now=Date.now()){
+ expirePower(now);
  const night=phase==="room" && route==="night";
  const v=speed(), bike=power==="bike", protectedRun=bike||power==="shield"||invuln>0;
  elapsed+=dt;updateRoute(dt);
  // The last stretch before the house is kept clear even at bike speed.
  const spawning=!safePhase() && (phase==="forest"?elapsed<nextHouse-2.5:phaseTime<8);
+ if(spawning) spawnBubble(now);
  if(spawning && nextFeature<position+W-playerX+90){
   if(nextFeature<position+W-playerX+26) nextFeature=position+W-playerX+26;
   buildFeature(nextFeature,v);
  }
- if(spawning && nextItem<position+W-playerX+65){
-  const endOfFeature=objects.reduce((end,o)=>Math.max(end,o.x+o.w),nextItem-55);
-  const x=endOfFeature+55;
-  pickups.push({x,kind:Object.keys(items)[itemIndex++%3]});
-  nextFeature=Math.max(nextFeature,x+80);nextItem=x+1100;
- }
+
  position+=v*(bike?3:1)*dt;
  const multiplier=(1+profile.up*.01)*(night?1.5:1)*(bike?1.1:1);
  rawScore+=v*(bike?3:1)*dt/5*multiplier;
@@ -344,25 +393,14 @@ function step(dt){
    star.got=true;runStars+=star.value;rawScore+=star.value*10*multiplier;sound(900,.07);buzz(12);
   }
  }
- if(!power && !falling){
-  const pickup=pickups.find(p=>Math.abs(p.x-position)<24 && Math.abs(y)<42);
-  if(pickup){pickup.got=true;activate(pickup.kind);}
- } else if(power) {
-  powerTime-=dt;
-  if(powerTime<=0){
-   if(bike){
-    const blocked=objects.find(o=>o.kind!=="hill" && o.x-13<position && o.x+o.w+13>position);
-    if(blocked) position=blocked.x+blocked.w+15;
-    resetJump();y=Math.max(0,terrainAt(position));invuln=Math.max(invuln,.25);
-   }
-   if(power==="shield" && terrain===-Infinity) invuln=Math.max(invuln,.9);
-   power=null;buzz(18);
-  }
+ if(!power && !falling && !supported && jumps>0){
+  const pickup=pickups.find(p=>Math.hypot(p.x-position,bubbleHeight(p,now)-y-32)<BUBBLE_RADIUS+9);
+  if(pickup && activate(pickup.kind,now,multiplier)) pickup.got=true;
  }
  invuln=Math.max(0,invuln-dt);
  objects=objects.filter(o=>o.x+o.w>position-playerX-32);
  stars=stars.filter(s=>!s.got&&s.x>position-playerX-25);
- pickups=pickups.filter(p=>!p.got&&p.x>position-playerX-28);
+ pickups=pickups.filter(p=>!p.got&&p.x>position-BUBBLE_RADIUS-9);
 }
 function updateHud(){
  byId("best").textContent="BEST "+format(profile.best);
@@ -457,10 +495,6 @@ function forest(){
   oval(x,ground-90,37,30,"#589961");oval(x-7,ground-102,24,23,"#82bc6a");
  }
  rect(0,ground,W,H-ground,"#a06b4c");rect(0,ground,W,7,"#6cae47");
- for(let i=0;i<Math.ceil(W/37)+1;i++){
-  const x=i*37-position%37;
-  rect(x,ground+15+(i%2)*8,13,3,"#c88a5e",1);
- }
 }
 function interior(){
  const night=route==="night" && (phase==="entry"||phase==="room"||phase==="window");
@@ -498,8 +532,14 @@ function feature(o){
  }
  if(o.kind==="hill"){
   ctx.beginPath();ctx.moveTo(x,ground);
-  for(let dx=0;dx<=o.w;dx+=2) ctx.lineTo(x+dx,ground-Math.sin(dx/o.w*Math.PI)*o.h);
-  ctx.lineTo(x+o.w,ground);ctx.closePath();ctx.fillStyle="#75af53";ctx.fill();return;
+  for(let dx=0;dx<=o.w;dx+=2) ctx.lineTo(x+dx,ground-hillHeight(o,o.x+dx));
+  ctx.closePath();ctx.fillStyle="#75af53";ctx.fill();
+  ctx.beginPath();
+  for(let dx=0;dx<=o.w;dx+=1){
+   const top=ground-hillHeight(o,o.x+dx);
+   if(dx) ctx.lineTo(x+dx,top);else ctx.moveTo(x,top);
+  }
+  ctx.strokeStyle="#3d7239";ctx.lineWidth=2;ctx.stroke();return;
  }
  switch(o.kind){
   case "bear":
@@ -518,7 +558,7 @@ function feature(o){
    drawStar(x+o.w/2,top+o.h*.57,6,0);
  }
 }
-function draw(t){
+function draw(t,now){
  ctx.clearRect(0,0,W,H);
  if(state==="home"||state==="menu"||state==="sparkle"){
   bedroom(t);
@@ -539,8 +579,15 @@ function draw(t){
  for(const o of objects) feature(o);
  for(const star of stars) drawStar(playerX+star.x-position,ground-star.y,star.value>1?8:7,t*.4);
  for(const p of pickups){
-  const x=playerX+p.x-position;
-  oval(x,ground-23,15,15,"#fff6bc");label(items[p.kind][1],x,ground-18,18,"#513e7a");
+  const x=playerX+p.x-position, cy=ground-bubbleHeight(p,now), item=items[p.kind];
+  ctx.beginPath();ctx.arc(x,cy,BUBBLE_RADIUS,0,Math.PI*2);
+  ctx.fillStyle="#def9ff55";ctx.fill();ctx.strokeStyle=itemColors[item.tier];ctx.lineWidth=2;ctx.stroke();
+  oval(x-8,cy-10,4,2,"#ffffffc0");
+  if(p.kind==="shield"){
+   oval(x,cy,8,5,"#fb8aaa");
+   ctx.beginPath();ctx.arc(x,cy+5,4,0,Math.PI*2);ctx.strokeStyle="#fff3ad";ctx.stroke();
+  } else label(item.icon,x,cy+(p.kind==="bonus"?0:6),18,"#513e7a");
+  if(p.kind==="bonus") label("+5",x,cy+13,11,"#24334c");
  }
  const visible=state!=="count" || elapsed>0;
  if(visible){
@@ -558,26 +605,28 @@ function draw(t){
   if(warning) label("！",x,feet-66-Math.sin(t*15)*3,26,"#d62242");
  }
  if(power && state==="play"){
-  rect(W/2-87,53,174,25,"#30345c",10);label(items[power][0]+" "+Math.ceil(powerTime)+"秒",W/2,71,14);
+  rect(W/2-87,53,174,25,"#30345c",10);label(items[power].name+" "+Math.ceil(Math.max(0,powerUntil-now)/1000)+"秒",W/2,71,14);
  }
 }
 function frame(now){
  const dt=Math.min(.04,(now-(last??now))/1000);last=now;
+ const wallNow=Date.now();
  if(!document.hidden){
+  if(state==="paused" || state==="count") expirePower(wallNow);
   stageTime+=dt;
   if(state==="sparkle"&&stageTime>=2) countdown(()=>{state="entrance";stageTime=0;});
   else if(state==="count"){
    count.textContent=String(Math.max(1,3-Math.floor(stageTime)));
    if(stageTime>=3){count.hidden=true;afterCount();}
-  } else if(state==="entrance"&&stageTime>=.62) state="play";
+  } else if(state==="entrance"&&stageTime>=.62) enterPlay(wallNow);
   else if(state==="eyes"&&stageTime>=.5) result();
   if(state==="play"){
    // Fixed-size substeps keep contact and pickup reach stable during slow frames.
    const steps=Math.max(1,Math.ceil(dt*120));
-   for(let i=0;i<steps&&state==="play";i++) if(dt>0) step(dt/steps);
+   for(let i=0;i<steps&&state==="play";i++) if(dt>0) step(dt/steps,wallNow);
    updateHud();
   }
-  draw(now/1000);
+  draw(now/1000,wallNow);
  }
  requestAnimationFrame(frame);
 }
